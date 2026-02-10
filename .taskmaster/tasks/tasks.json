@@ -1,0 +1,411 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Initialize monorepo with Turborepo and pnpm workspaces",
+        "description": "Set up the monorepo structure as defined in PRD section 2.2. Initialize Turborepo with pnpm workspaces. Create all package directories: apps/extension, apps/api, apps/worker, packages/evaluation, packages/transcripts, packages/db, packages/shared, packages/config. Configure turbo.json with build/dev/lint/test pipelines.",
+        "details": "Create pnpm-workspace.yaml listing all apps/* and packages/*. Initialize turbo.json with pipeline definitions for build, dev, lint, type-check, and test. Each package gets its own package.json and tsconfig.json. The packages/config directory should contain shared tsconfig.base.json, eslint.config.js, and prettier config. All packages use TypeScript strict mode. Add .npmrc for pnpm configuration.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Set up shared packages: types, constants, and validation schemas",
+        "description": "Create the packages/shared package with all shared TypeScript types, DTOs, Zod validation schemas, constants, and error codes used across the extension, API, and worker. Define core types: VideoInput, EvaluationResult, SignalBreakdown, Classification enum (HIGH_VALUE, MIXED, LOW_VALUE), EvalStatus enum (CACHED, QUEUED, ERROR), and all API request/response contracts from PRD section 4.3.",
+        "details": "Define Zod schemas for all API request/response bodies. Export TypeScript types inferred from Zod schemas. Include constants: signal thresholds, classification rules, rate limits, cache TTLs. Define error code enum. Create evaluation-related types: SignalCategory scores, Evaluation, ContributedEvaluation. Create provider-related types: AIProvider enum (OPENAI, OPENROUTER, OLLAMA, OPENCODE), ProviderConfig. All exports via barrel index.ts.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Set up database package with Prisma schema and repository layer",
+        "description": "Create the packages/db package with Prisma ORM configuration for PostgreSQL. Define the complete Prisma schema from PRD section 3.4: Video, Evaluation, TranscriptSegment, UserPreference, BehavioralSignal, EvalVersion entities. Implement the repository pattern from PRD section 3.3 with interfaces and Prisma implementations. Set up Docker Compose for local PostgreSQL.",
+        "details": "Create prisma/schema.prisma with all entities, enums (SegmentType, SignalType), relations, and indexes (composite unique on Evaluation, unique on youtube_id, compound index on BehavioralSignal). Create src/client.ts with singleton Prisma client and connection pooling. Define repository interfaces: IVideoRepository, IEvaluationRepository, ITranscriptRepository, IUserPreferenceRepository, IBehavioralSignalRepository, IEvalVersionRepository. Implement Prisma repositories for each interface. Create repository factory in src/repositories/index.ts. Add docker-compose.yml at repo root with PostgreSQL 16 and Redis 7 services. Run initial prisma migrate dev.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1,
+          2
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Build transcript processing package",
+        "description": "Create the packages/transcripts package with utilities for transcript fetching, cleaning, chunking, and hashing. Implement transcript text cleaning (strip timestamps, normalize punctuation, collapse whitespace), SHA-256 hashing, and chunking into segments (EARLY: first 60-120s, FULL: up to 10 minutes). Support both raw caption XML/JSON parsing and plain text input.",
+        "details": "Implement: parseTimedTextXML() for YouTube timedtext XML format, parseTimedTextJSON() for JSON format, cleanTranscript() for text normalization, hashTranscript() using SHA-256, chunkTranscript() to split into EARLY and FULL segments with millisecond timestamps, extractPlainText() to get raw text from timed segments. All functions should be pure and side-effect-free for use in both browser and Node.js. Export types: TranscriptSegment, TranscriptChunk, SegmentType. Write unit tests with Vitest.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1,
+          2
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Build evaluation pipeline package with heuristics and LLM integration",
+        "description": "Create the packages/evaluation package implementing the evaluation pipeline from PRD sections 6.1-6.4. Build the heuristics engine with four signal categories (Value Density, Manipulation & Clickbait, Extractive Behavior, Language Patterns). Implement the classification logic (HIGH_VALUE, MIXED, LOW_VALUE). Create the LLM prompt template system with versioning. Integrate with server-side LLM providers (OpenAI/Anthropic).",
+        "details": "Implement heuristic analyzers: CTADensityAnalyzer (CTA phrases per minute), PromiseInflationAnalyzer (regex for hyperbolic patterns), RepetitionRateAnalyzer (n-gram analysis), EmotionalPrimingAnalyzer (manipulation keyword frequency). Each returns a normalized 0-1 score and evidence phrases. Implement ClassificationEngine with configurable thresholds from PRD 6.3. Create PromptTemplateManager for versioned prompt storage and rendering. Create LLMEvaluator that sends structured prompts and parses JSON responses. Support both Early Warning mode (partial transcript, fast) and Full Evaluation mode (complete transcript). All thresholds configurable via EvalVersion. Write comprehensive unit tests.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          2,
+          4
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Build API server with core evaluation endpoints",
+        "description": "Create the apps/api REST API server using Express or Fastify with TypeScript. Implement all core endpoints from PRD section 4.2: POST /api/v1/evaluate/batch, GET /api/v1/evaluate/:videoId, POST /api/v1/evaluate/realtime, POST /api/v1/signals, GET/PUT /api/v1/preferences, GET /api/v1/health. Set up Zod request validation middleware, JWT authentication, rate limiting (60 req/min per user), and error handling.",
+        "details": "Set up Express/Fastify app with TypeScript. Create middleware: authMiddleware (JWT validation), rateLimitMiddleware (60/min per user, cached lookups free), validateMiddleware (Zod schema validation). Implement route handlers for each endpoint. Wire repository layer from packages/db for data access. Integrate packages/evaluation for LLM evaluation orchestration. Set up Redis client for L2 cache layer. Implement batch evaluation logic: check L2 cache -> check L3 DB -> queue uncached for worker processing. Return CACHED/QUEUED/ERROR status per video. Add health endpoint returning current eval_version. Configure CORS for extension origin.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          3,
+          5
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Implement contributed evaluation endpoint and trust system",
+        "description": "Add the POST /api/v1/evaluate/contribute and GET /api/v1/evaluate/prompt-template endpoints to the API server. Implement the contributed evaluation trust and validation system from PRD section 5.4.5: schema validation via Zod, eval_version matching, trust scoring per contributor, rate limiting (30/hour/user), and anomaly detection for outlier signal scores.",
+        "details": "Create ContributionService with methods: validateContribution() (Zod schema check + eval_version match), scoreTrust() (compare against existing server evaluations for same videos, build per-user trust score), detectAnomalies() (flag signal scores that are statistical outliers). Add contributor_trust_score column to UserPreference or create new ContributorProfile entity. New contributors start at low trust; evaluations stored but only served to others after cross-validation. Rate limit: 30 contributions/hour/user. The prompt-template endpoint returns the current prompt template text and eval_version tag, cacheable until version bumps. Add response statuses: ACCEPTED, REJECTED, PENDING_REVIEW with reason field.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          6
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Build background worker service with BullMQ job processing",
+        "description": "Create the apps/worker background job processor using BullMQ and Redis. Implement async transcript processing, queued full evaluations triggered by the API's batch endpoint, and background cache warming. Workers consume jobs from the evaluation queue, run them through the evaluation pipeline, and write results back to L3 (PostgreSQL) and L2 (Redis) cache layers.",
+        "details": "Set up BullMQ worker with Redis connection. Define job types: FULL_EVALUATION (video_id + transcript -> full LLM evaluation), CACHE_WARM (pre-evaluate trending/popular videos). Implement job processors that use packages/evaluation for LLM calls and packages/db repositories for persistence. Add retry logic with exponential backoff for failed LLM calls. Implement job progress tracking. Configure concurrency limits. Write results to Evaluation table (L3) and Redis cache (L2). Add health check endpoint for worker monitoring. Log processing metrics (latency, success/failure rates).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          3,
+          5
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "Scaffold Chrome extension with Manifest V3 and React",
+        "description": "Create the apps/extension Chrome extension scaffold with Manifest V3. Set up the service worker (background.ts), content script entry (content/inject.ts), popup UI (React), and options page (React). Configure manifest.json with required permissions (activeTab, storage, tabs), content script matching for youtube.com, and CSP headers. Set up the build pipeline using Vite or webpack for bundling extension assets.",
+        "details": "Create manifest.json (Manifest V3) with: permissions (activeTab, storage, tabs), host_permissions (*://*.youtube.com/*), content_scripts matching YouTube URLs, service_worker registration, popup and options page declarations, CSP headers. Set up build config (Vite with CRXJS or webpack) to bundle: background service worker, content script, popup React app, options React app. Create basic React shells for popup and options pages. Set up chrome.storage.local types. Configure hot-reload for development. Add extension-specific tsconfig extending shared config.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1,
+          2
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Implement content script: video discovery and DOM mutation observer",
+        "description": "Build the content script that injects into YouTube pages and discovers video cards. Implement MutationObserver to watch for new video card elements across all YouTube surfaces (home feed, search results, subscriptions, sidebar recommendations). Extract youtube_id values from href attributes on video card elements. Handle YouTube's SPA navigation (pushState/popState) to re-scan on page transitions.",
+        "details": "Create content/inject.ts as the main content script entry. Implement VideoDiscoveryService with MutationObserver watching for ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer elements. Extract video IDs from /watch?v= href patterns. Handle YouTube SPA navigation by listening to yt-navigate-finish events and popstate. Debounce rapid DOM mutations. Maintain a Set of discovered video IDs to avoid duplicate processing. Expose a callback/event system for downstream consumers (cache lookup, evaluation request). Handle edge cases: shorts, playlists, live streams (skip or flag differently).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 11,
+        "title": "Implement client-side transcript acquisition",
+        "description": "Build the transcript acquisition system in the content script for watch pages. Implement two strategies from PRD section 5.2 Step 3: Option A (DOM Caption Stream) observing live caption elements for the first 30-90 seconds, and Option B (TimedText Endpoint Fetch) discovering caption track metadata and fetching full caption XML/JSON from YouTube's timedtext endpoints. Use packages/transcripts for cleaning and hashing.",
+        "details": "Implement CaptionStreamObserver (Option A): observe .ytp-caption-segment elements via MutationObserver, stream timed text as it appears, collect first 30-90 seconds of transcript with zero network cost. Implement TimedTextFetcher (Option B): extract caption track metadata from ytInitialPlayerResponse or player config, construct timedtext API URL, fetch and parse caption XML/JSON. Create TranscriptAcquisitionService that uses Option A when available and falls back to Option B. Integrate packages/transcripts for cleanTranscript() and hashTranscript(). Emit transcript-ready events for downstream consumers.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9,
+          4
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 12,
+        "title": "Implement IndexedDB evaluation cache (L1) in the extension",
+        "description": "Build the client-side IndexedDB cache layer (L1) for storing evaluations in the Chrome extension. Cache is keyed by composite key (youtube_id, transcript_hash, eval_version). Implement TTL-based expiry (7 days). Provide fast synchronous-feeling lookups for previously seen videos. Include cache stats tracking and periodic pruning via service worker alarms.",
+        "details": "Create storage/cache.ts using IndexedDB (via idb library or raw API). Define EvaluationCache store with composite index on (youtube_id, transcript_hash, eval_version). Implement methods: get(videoId, transcriptHash, evalVersion), set(evaluation, ttl), delete(videoId), prune() (remove expired entries), getStats() (hit count, miss count, total entries, storage size). Set up chrome.alarms in service worker for periodic pruning (every 6 hours). Implement cache-first lookup pattern: check L1 -> if miss, return null (caller handles L2/L3). Write to L1 when evaluations are received from server or generated client-side. Track and expose cache statistics for the popup UI.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 13,
+        "title": "Implement client-side heuristic scoring in the extension",
+        "description": "Port the lightweight heuristic analyzers from packages/evaluation to run in the browser content script. Implement the four heuristic checks from PRD section 5.2 Step 4: CTA density, promise inflation, repetition rate, and emotional priming. These run on the client before any server request and can render preliminary indicators if confidence is high enough.",
+        "details": "Reuse or adapt heuristic analyzers from packages/evaluation for browser context (ensure no Node.js-only APIs). Implement: CTADensityAnalyzer (count CTA phrases per minute of transcript), PromiseInflationAnalyzer (regex patterns for hyperbolic framing), RepetitionRateAnalyzer (n-gram frequency analysis for low information density), EmotionalPrimingAnalyzer (manipulation keyword frequency). Create HeuristicEngine that runs all four and produces a preliminary SignalBreakdown with confidence score. If confidence exceeds configurable threshold, emit a preliminary-evaluation event that the UI can render immediately. This provides instant feedback without waiting for server or LLM.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9,
+          5,
+          11
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 14,
+        "title": "Build service worker: API communication and evaluation orchestration",
+        "description": "Implement the Chrome extension service worker (background.ts) that coordinates API communication, manages the evaluation lifecycle, and orchestrates cache lookups. The service worker receives messages from content scripts, checks L1 cache, makes batch API calls to the server, and dispatches results back to content scripts for UI rendering.",
+        "details": "Create background.ts service worker with message handlers: EVALUATE_BATCH (receives video IDs from content script, checks L1 cache, sends uncached to server batch endpoint, returns results), EVALUATE_REALTIME (sends partial transcript to realtime endpoint), SUBMIT_SIGNALS (fire-and-forget behavioral signals). Implement APIClient class for server communication with JWT auth header, error handling, and retry logic. Implement EvaluationOrchestrator that coordinates: L1 cache check -> server batch request -> cache write -> response dispatch. Set up chrome.alarms for periodic cache pruning. Handle extension lifecycle events (install, update). Store anonymous user UUID in chrome.storage.local. Implement JWT token management (exchange UUID for JWT, refresh on expiry).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9,
+          12,
+          6
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 15,
+        "title": "Build feed overlay UI: video card badges and tooltips",
+        "description": "Implement the browse feed indicator UI from PRD section 5.3. Inject color-coded badges into YouTube video card thumbnails showing evaluation results: green (HIGH_VALUE), amber (MIXED), red (LOW_VALUE), gray (not evaluated). Add click-to-expand tooltip showing the 1-2 line explanation. Include 'Hide this video' and 'Hide similar videos' actions in the tooltip.",
+        "details": "Create UI components injected into YouTube DOM: EvaluationBadge (small colored indicator in thumbnail corner with colors from PRD: #22C55E green, #EAB308 amber, #EF4444 red, #9CA3AF gray), EvaluationTooltip (popover on badge click showing classification label, explanation text, signal breakdown, hide actions). Use CSS-in-JS or injected stylesheets scoped to avoid YouTube CSS conflicts. Handle badge placement for different card types (grid cards, list items, sidebar recommendations). Update badges reactively when evaluations arrive (initial gray -> colored after evaluation). Implement hide actions that send behavioral signals and visually dim/remove the video card. Ensure badges are re-injected after YouTube SPA navigations.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          10,
+          14
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 16,
+        "title": "Build watch page early warning toast UI",
+        "description": "Implement the watch page early warning system from PRD section 5.3. When red flags spike in the first 30-90 seconds of playback, display a subtle toast banner below the video player: 'High persuasion density detected. You may want to skip.' The banner auto-dismisses after 8 seconds and can be permanently dismissed for the current video.",
+        "details": "Create EarlyWarningToast component injected below the YouTube video player (#movie_player or #player-container). Toast appears when: realtime evaluation returns LOW_VALUE classification during first 30-90 seconds, OR client-side heuristics detect high manipulation/extractive scores. Design: subtle, non-intrusive banner with warning icon, message text, and dismiss button. Auto-dismiss timer: 8 seconds. Permanent dismiss: store dismissed video IDs in session storage (not persisted across sessions). Animate in/out smoothly. Ensure toast doesn't interfere with video controls or YouTube's own overlays. Style to be visually distinct but not jarring.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          11,
+          13,
+          14
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 17,
+        "title": "Implement AI Provider Manager with Vercel AI SDK for client-side evaluation",
+        "description": "Build the AI Provider Manager module (ai/providers.ts) in the Chrome extension using the Vercel AI SDK. Support four providers: OpenAI (@ai-sdk/openai), OpenRouter (@ai-sdk/openrouter), Ollama (ollama-ai-provider), and OpenCode (@ai-sdk/openai with custom baseURL). This module handles provider instantiation, API key storage in chrome.storage.local, and executing LLM evaluations entirely in the browser. API keys never leave the browser.",
+        "details": "Install Vercel AI SDK packages: ai, @ai-sdk/openai, @ai-sdk/openrouter, ollama-ai-provider. Create AIProviderManager class with methods: configureProvider(type, apiKey, baseUrl?, model?), testConnection() (minimal test prompt), executeEvaluation(transcript, promptTemplate) -> EvaluationResult, getProviderConfig() -> ProviderConfig | null, removeApiKey(). Store provider config in chrome.storage.local (API key encrypted at rest by Chrome). Create provider factory: createOpenAIProvider(apiKey), createOpenRouterProvider(apiKey), createOllamaProvider(baseUrl), createOpenCodeProvider(apiKey, baseUrl). Each returns a Vercel AI SDK provider instance. The executeEvaluation method constructs the prompt using the server-provided template, calls generateObject() from AI SDK, and returns parsed EvaluationResult. Ensure module isolation: this module is the ONLY code that accesses API keys, and it never exposes keys to any other module.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9,
+          5
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 18,
+        "title": "Implement Community Contribution Mode: client-side evaluation and result submission",
+        "description": "Build the full Community Contribution Mode flow from PRD section 5.4.4. When enabled and a cache miss occurs for a video the user is watching, the extension performs LLM evaluation client-side using the AI Provider Manager, renders results locally, and submits the evaluation to the server via POST /api/v1/evaluate/contribute. Fetch the current prompt template from GET /api/v1/evaluate/prompt-template and cache it locally.",
+        "details": "Create ContributionService in the extension with methods: isEnabled() -> boolean, evaluateAndContribute(videoId, transcript, transcriptHash). Flow: 1) Check L1 cache miss, 2) Fetch prompt template from server (cache locally, refresh on eval_version change), 3) Call AIProviderManager.executeEvaluation() with transcript and prompt template, 4) Write result to L1 IndexedDB cache immediately, 5) Submit result to POST /api/v1/evaluate/contribute with: youtube_id, transcript_hash, eval_version, classification, confidence, explanation, signals, provider, model. 6) Handle response (ACCEPTED/REJECTED/PENDING_REVIEW). Wire into EvaluationOrchestrator: after L1 miss and before server batch request, check if contribution mode is active and execute client-side evaluation. If client-side evaluation succeeds, skip server request for that video. Add contribution toggle state to chrome.storage.local synced with options page.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          17,
+          14,
+          12,
+          7
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 19,
+        "title": "Build popup UI: settings panel with cache stats and evaluation info",
+        "description": "Build the React popup UI for the Chrome extension. Include a strictness slider, hidden channel management, cache statistics display (total entries, hit rate, storage size), current evaluation version info, and quick toggles for enabling/disabling the extension. The popup should be lightweight and load instantly.",
+        "details": "Create React app in popup/ directory. Components: StrictnessSlider (adjustable threshold for evaluation sensitivity), HiddenChannelsList (view/manage hidden channels), CacheStats (display L1 cache metrics: total entries, hit/miss ratio, storage usage, last pruned), EvalVersionInfo (show current eval_version tag), QuickToggle (enable/disable extension on current page/globally), ContributionStatusBadge (show if community contribution is active, with link to options for setup). Use chrome.storage.local for persisting preferences. Communicate with service worker via chrome.runtime.sendMessage. Keep bundle size minimal (<100KB). Style consistently with extension theme.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9,
+          12
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 20,
+        "title": "Build options page: AI provider configuration, privacy mode, and data export",
+        "description": "Build the React options page for the Chrome extension. Include the AI Providers configuration section from PRD 5.4.2 (provider selector, API key input, base URL override, model selector, test connection, contribution toggle), privacy mode toggle, API endpoint configuration, and data export. Display persistent API key safety messaging from PRD 5.4.3.",
+        "details": "Create React app in options/ directory. Major sections: 1) AI Providers section: provider dropdown (OpenAI, OpenRouter, Ollama, OpenCode), masked API key input (hidden for Ollama), optional base URL field (default localhost:11434 for Ollama), model ID text field, 'Test Connection' button (calls AIProviderManager.testConnection()), Community Contribution toggle with label text from PRD, 'Remove API Key' button. 2) Persistent trust notice: non-dismissible banner stating 'Your API keys are stored securely in your browser and are never sent to TubeSage servers. All AI calls are made directly from your browser to your chosen provider.' 3) Privacy Mode toggle (disables all server communication). 4) Server endpoint configuration (custom API URL). 5) Data export (export evaluation cache and preferences as JSON). Wire all settings to chrome.storage.local. Validate API key format per provider before saving.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          9,
+          17
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 21,
+        "title": "Implement JWT authentication flow",
+        "description": "Build the authentication system from PRD section 8.2. On first install, the extension generates a random UUID stored in chrome.storage.local. This UUID is exchanged for a short-lived JWT via a /auth/token endpoint on the API server. All subsequent API requests include the JWT in the Authorization header. Implement token refresh logic for expired JWTs.",
+        "details": "Extension side: generate UUID v4 on first install (chrome.runtime.onInstalled), store in chrome.storage.local, implement AuthService with methods: getToken() (return cached JWT or exchange UUID for new one), refreshToken(), getAuthHeaders() -> { Authorization: 'Bearer ...' }. API side: create POST /auth/token endpoint that accepts { user_id: UUID } and returns { token: JWT, expires_in: number }. JWT payload: { sub: UUID, iat, exp }. Sign with server-side secret. Add authMiddleware to all /api/v1/* routes that validates JWT, extracts user_id, and attaches to request context. Handle expired tokens with 401 response. Extension auto-refreshes on 401.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          6,
+          9
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 22,
+        "title": "Implement Redis L2 cache layer on the API server",
+        "description": "Set up the Redis-based L2 cache layer on the API server from PRD section 6.5. Cache evaluations in Redis keyed by (youtube_id, transcript_hash, eval_version) with a 24-hour TTL. The cache sits between the client (L1) and the database (L3). On cache miss, check L3 (PostgreSQL), then queue for LLM evaluation. Write back to L2 after L3 writes.",
+        "details": "Create CacheService using ioredis or redis client. Key format: eval:{youtube_id}:{transcript_hash}:{eval_version}. Methods: getEvaluation(videoId, transcriptHash, evalVersion) -> Evaluation | null, setEvaluation(evaluation, ttl=86400), invalidateByVersion(evalVersion), getMultiple(keys[]) for batch lookups. Integrate into the API evaluation flow: batch endpoint checks L2 first, then falls back to L3 repository lookup, then queues for worker. Worker writes to L3 then L2. Contributed evaluations also write to L2 after L3 acceptance. Add Redis connection config to environment variables. Handle Redis connection failures gracefully (fall back to L3-only).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          6,
+          3
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 23,
+        "title": "Implement behavioral signals collection",
+        "description": "Build the behavioral signal collection system from PRD sections 4.2 and 3.4. The extension detects implicit user signals (early exit, long watch, hide) and submits them in batches via POST /api/v1/signals. The API processes signals asynchronously and stores them in the BehavioralSignal table for future personalization.",
+        "details": "Extension side: create SignalCollector that detects: EARLY_EXIT (user leaves watch page within first 30s), LONG_WATCH (user watches >80% of video), HIDE (user clicks hide on a video card). Batch signals and fire-and-forget to POST /api/v1/signals every 30 seconds or on page unload. API side: implement /api/v1/signals endpoint that accepts { signals: [{ video_id, signal_type, timestamp }] }, validates via Zod, and writes to BehavioralSignal table asynchronously (fire-and-forget response, process in background). Signals are associated with anonymous user_id from JWT.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          6,
+          9,
+          14
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 24,
+        "title": "Implement user preferences sync between extension and API",
+        "description": "Build the user preferences system from PRD sections 4.2 and 3.4. Users configure strictness level, hidden channels, and other settings in the extension popup/options. Preferences sync to the server via GET/PUT /api/v1/preferences and are stored in the UserPreference table.",
+        "details": "Extension side: create PreferenceService that manages: strictness (number 0-1), hiddenChannels (string[]), privacyMode (boolean), contributionEnabled (boolean). Store locally in chrome.storage.local. Sync to server on change via PUT /api/v1/preferences. Load from server on extension startup via GET /api/v1/preferences (server is source of truth for cross-device sync readiness). API side: implement GET /api/v1/preferences (return user prefs by JWT user_id) and PUT /api/v1/preferences (upsert UserPreference record). Validate with Zod schema. Handle offline mode: queue preference updates and sync when connectivity returns.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          6,
+          9,
+          21
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 25,
+        "title": "Set up CI/CD pipeline with GitHub Actions",
+        "description": "Configure the CI/CD pipeline from PRD section 9.2. Set up GitHub Actions workflows for linting (ESLint + Prettier), type-checking, unit tests, and integration tests (against Docker PostgreSQL + Redis). Configure extension build to produce a .zip artifact. Set up Docker container builds for API and Worker services.",
+        "details": "Create .github/workflows/ci.yml with jobs: lint (pnpm lint across all packages), type-check (pnpm type-check), unit-test (vitest run), integration-test (docker-compose up PostgreSQL + Redis, run prisma migrate deploy, run integration tests). Create .github/workflows/extension-build.yml that builds the extension and uploads .zip artifact. Create .github/workflows/deploy.yml for API/Worker Docker builds. Set up Turborepo remote caching for CI. Configure Dependabot for dependency updates. Add pnpm audit step for security. Create Dockerfiles for apps/api and apps/worker.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 26,
+        "title": "Write unit and integration tests for backend packages",
+        "description": "Write comprehensive test suites using Vitest for all backend packages: packages/transcripts (cleaning, hashing, chunking), packages/evaluation (heuristic analyzers, classification logic, prompt rendering), packages/db (repository layer with test database), apps/api (endpoint integration tests), apps/worker (job processing tests). Target meaningful coverage of core business logic.",
+        "details": "Test suites: 1) packages/transcripts: test cleanTranscript with various inputs (timestamps, unicode, whitespace), hashTranscript determinism, chunkTranscript segment boundaries. 2) packages/evaluation: test each heuristic analyzer with known-good and known-bad transcripts, classification engine threshold logic, prompt template rendering. 3) packages/db: integration tests with Docker PostgreSQL, test all repository methods (CRUD, composite key lookups, upserts). 4) apps/api: supertest integration tests for all endpoints, auth middleware, rate limiting, Zod validation rejection, contribute endpoint trust validation. 5) apps/worker: test job processing with mocked LLM calls, retry logic, cache write-back. Use Vitest with setup files for Docker services.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          4,
+          5,
+          3,
+          6,
+          8
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 27,
+        "title": "Write E2E tests for Chrome extension with Playwright",
+        "description": "Set up Playwright for end-to-end testing of the Chrome extension. Test the core user flows: feed page badge rendering, tooltip interactions, watch page early warning toast, popup UI interactions, options page AI provider configuration, and Community Contribution Mode flow.",
+        "details": "Configure Playwright for Chrome extension testing (load unpacked extension). Test scenarios: 1) Feed page: navigate to YouTube home, verify badges appear on video cards, verify tooltip opens on badge click with explanation text. 2) Watch page: navigate to a video, verify early warning toast appears for known-bad content (mock API), verify toast auto-dismisses after 8s. 3) Popup: open popup, verify cache stats display, verify strictness slider persists changes. 4) Options: open options page, configure OpenAI provider (mock key), test connection button, enable contribution mode, verify trust messaging is visible. 5) Privacy mode: enable privacy mode, verify no server requests are made. Use Playwright fixtures for extension loading and YouTube page mocking.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          15,
+          16,
+          19,
+          20,
+          18
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 28,
+        "title": "Set up Docker deployment configuration for API and Worker",
+        "description": "Create production-ready Dockerfiles and docker-compose configurations for the API server and Worker service from PRD section 9.3. Include multi-stage builds for minimal image size, health checks, environment variable configuration, and orchestration with PostgreSQL and Redis dependencies.",
+        "details": "Create apps/api/Dockerfile: multi-stage build (build stage with pnpm install + turbo prune + build, production stage with node:20-alpine + minimal dependencies). Create apps/worker/Dockerfile: same multi-stage pattern. Create docker-compose.prod.yml with services: api (builds apps/api, exposes port 3000, depends on postgres + redis), worker (builds apps/worker, depends on postgres + redis), postgres (postgres:16-alpine with volume), redis (redis:7-alpine with persistence). Add health check endpoints. Configure environment variables via .env.production.example. Add .dockerignore files. Ensure Prisma client is generated in Docker build.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          6,
+          8
+        ],
+        "priority": "low",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "projectName": "TubeSage",
+      "version": "1.0",
+      "createdAt": "2026-02-10",
+      "description": "Real-Time YouTube Surfing Assistant - Chrome Extension + API",
+      "created": "2026-02-10T04:06:36.529Z",
+      "updated": "2026-02-10T04:12:49.090Z"
+    }
+  }
+}

@@ -1,6 +1,4 @@
-
-
-**TubeSage**
+# **TubeSage**
 
 Real-Time YouTube Surfing Assistant
 
@@ -8,13 +6,12 @@ Technical Product Requirements Document
 
 Version 1.0  |  February 2026
 
-**CONFIDENTIAL**
 
 | Document Owner | Engineering & Product |
 | :---- | :---- |
 | **Status** | Draft |
 | **Target Release** | v1.0 MVP |
-| **Tech Stack** | TypeScript, React, Node.js, PostgreSQL (primary), Prisma ORM |
+| **Tech Stack** | TypeScript, React, Node.js, PostgreSQL (primary), Prisma ORM, Vercel AI SDK |
 | **Last Updated** | February 10, 2026 |
 
 # **Table of Contents**
@@ -53,15 +50,18 @@ Intentional YouTube consumers: learners, researchers, and thinkers who feel fric
 
 TubeSage follows a client-heavy, server-light architecture. The Chrome extension performs transcript acquisition, text cleaning, and lightweight heuristic scoring on the client side. The backend API provides canonical LLM-based evaluations, a global cache, and shared data consistency. This design minimizes server costs while keeping the user experience fast.
 
+Additionally, users who provide their own AI provider API keys can opt into **Community Contribution Mode**, where the extension performs full LLM evaluations directly in the browser using the Vercel AI SDK and contributes the results back to the global cache. This creates a distributed evaluation network that reduces server costs while accelerating cache coverage — all without any API keys ever leaving the user's browser.
+
 **Architecture Components**
 
 | Component | Technology | Responsibility |
 | :---- | :---- | :---- |
-| Chrome Extension | TypeScript, React (popup/options), Chrome APIs | DOM injection, transcript capture, local heuristics, local cache (IndexedDB), UI overlays |
-| API Server | Node.js, Express/Fastify, TypeScript | Video ID normalization, LLM evaluation orchestration, global cache management, rate limiting |
+| Chrome Extension | TypeScript, React (popup/options), Chrome APIs, Vercel AI SDK | DOM injection, transcript capture, local heuristics, local cache (IndexedDB), UI overlays, client-side LLM evaluation (Community Contribution Mode) |
+| API Server | Node.js, Express/Fastify, TypeScript | Video ID normalization, LLM evaluation orchestration, global cache management, rate limiting, contributed evaluation ingestion |
 | Worker Service | Node.js, BullMQ, TypeScript | Async transcript processing, queued full evaluations, background cache warming |
 | Database Layer | PostgreSQL (primary) via Prisma ORM | Evaluation cache, user preferences, behavioral signals, evaluation versioning |
-| LLM Provider | OpenAI / Anthropic API (configurable) | Transcript-based content classification and explanation generation |
+| LLM Provider (Server) | OpenAI / Anthropic API (configurable) | Server-side transcript-based content classification and explanation generation |
+| LLM Provider (Client) | OpenAI, OpenRouter, Ollama, OpenCode via Vercel AI SDK | Client-side LLM evaluation in Community Contribution Mode; user provides their own API keys |
 
 ## **2.2 Monorepo Structure**
 
@@ -169,6 +169,8 @@ The following table describes the core entities in the database. The full Prisma
 | POST | /api/v1/signals | Submit behavioral signals (early exit, long watch, hide) in batches. Fire-and-forget from the extension; processed asynchronously. |
 | GET | /api/v1/preferences | Retrieve user preferences. |
 | PUT | /api/v1/preferences | Update user preferences (strictness level, hidden channels, etc.). |
+| POST | /api/v1/evaluate/contribute | Submit a client-side LLM evaluation result from Community Contribution Mode. Server validates schema, checks eval\_version, applies trust scoring, and writes to global cache if accepted. |
+| GET | /api/v1/evaluate/prompt-template | Returns the current evaluation prompt template and eval\_version tag. Used by Community Contribution Mode to ensure client-side evaluations use the same prompt as the server. Cached aggressively (changes only when eval\_version bumps). |
 | GET | /api/v1/health | Health check \+ current eval\_version tag. |
 
 ## **4.3 Request/Response Contracts**
@@ -198,6 +200,29 @@ Content-Type: application/json
 | results\[\].evaluation.signals | SignalBreakdown | Structured signal scores (value\_density, manipulation, extractive, language) |
 | eval\_version | string | The evaluation pipeline version used |
 
+**POST /api/v1/evaluate/contribute — Request**
+
+Content-Type: application/json
+
+| Field | Type | Required | Description |
+| :---- | :---- | :---- | :---- |
+| youtube\_id | string | Yes | YouTube video ID (11 characters) |
+| transcript\_hash | string | Yes | SHA-256 hash of the cleaned transcript used for evaluation |
+| eval\_version | string | Yes | The eval\_version tag the prompt template was generated from |
+| classification | string | Yes | "HIGH\_VALUE" \| "MIXED" \| "LOW\_VALUE" |
+| confidence | number | Yes | Model confidence score (0–1) |
+| explanation | string | Yes | 1–2 line human-readable explanation |
+| signals | SignalBreakdown | Yes | Structured signal scores (value\_density, manipulation, extractive, language) |
+| provider | string | Yes | Provider identifier used for the evaluation (e.g., "openai", "openrouter", "ollama", "opencode") |
+| model | string | Yes | Model identifier used (e.g., "gpt-4o-mini", "llama3.1") |
+
+**POST /api/v1/evaluate/contribute — Response**
+
+| Field | Type | Description |
+| :---- | :---- | :---- |
+| status | "ACCEPTED" \| "REJECTED" \| "PENDING\_REVIEW" | Whether the contributed evaluation was accepted into the global cache |
+| reason | string \| null | Explanation if rejected (e.g., "eval\_version mismatch", "schema validation failed") |
+
 # **5\. Chrome Extension Architecture**
 
 ## **5.1 Manifest V3 Structure**
@@ -209,8 +234,9 @@ The extension is built on Chrome Manifest V3 with the following components:
 | Service Worker | background.ts | Manages extension lifecycle, coordinates API calls, handles alarms for periodic cache pruning |
 | Content Script | content/inject.ts | Injected into YouTube pages. Observes DOM mutations for video cards, injects overlay indicators, captures transcript streams |
 | Popup UI | popup/ (React) | Settings panel: strictness slider, hidden channel management, cache stats, evaluation version info |
-| Options Page | options/ (React) | Extended settings: API endpoint configuration, privacy mode toggle, data export |
-| IndexedDB Store | storage/cache.ts | Client-side evaluation cache keyed by (youtube\_id, transcript\_hash, eval\_version). TTL-based expiry. |
+| Options Page | options/ (React) | Extended settings: API endpoint configuration, privacy mode toggle, data export, AI provider key management, Community Contribution Mode toggle |
+| AI Provider Manager | ai/providers.ts | Vercel AI SDK integration. Manages user-configured provider connections (OpenAI, OpenRouter, Ollama, OpenCode). Executes client-side LLM evaluations. |
+| IndexedDB Store | storage/cache.ts | Client-side evaluation cache keyed by (youtube\_id, transcript\_hash, eval\_version). TTL-based expiry. Stores encrypted provider API keys locally. |
 
 ## **5.2 Client-Side Processing Pipeline**
 
@@ -248,9 +274,15 @@ Before sending anything to the server, the extension runs lightweight heuristic 
 
 If the local heuristic confidence is high (above a configurable threshold), the extension can render a preliminary indicator without waiting for the server.
 
-**Step 5: Server Evaluation Request**
+**Step 5: Client-Side LLM Evaluation (Community Contribution Mode)**
 
-For uncached videos, the extension sends a batch request to POST /api/v1/evaluate/batch with video IDs and client-extracted transcripts. For real-time early warnings during playback, a separate call to POST /api/v1/evaluate/realtime sends the first 60–120 seconds of transcript.
+If the user has enabled Community Contribution Mode and configured an AI provider API key, the extension can perform full LLM evaluations locally before falling back to the server. This step is triggered when a video has no cached evaluation (L1 miss) and the user is currently watching it. The extension uses the Vercel AI SDK to call the user's configured provider directly from the browser. The same structured prompt used by the server pipeline (fetched from the server's current EvalVersion) is used client-side, ensuring evaluation consistency. Once the evaluation completes, it is both rendered locally and submitted to the server via POST /api/v1/evaluate/contribute so other users benefit from the result.
+
+If Community Contribution Mode is disabled or no API key is configured, this step is skipped entirely.
+
+**Step 6: Server Evaluation Request**
+
+For uncached videos that were not evaluated client-side, the extension sends a batch request to POST /api/v1/evaluate/batch with video IDs and client-extracted transcripts. For real-time early warnings during playback, a separate call to POST /api/v1/evaluate/realtime sends the first 60–120 seconds of transcript.
 
 ## **5.3 UI Surfaces**
 
@@ -269,18 +301,94 @@ Clicking the badge reveals a tooltip with the 1–2 line explanation. The user c
 
 **Watch Page Early Warning**
 
-If red flags spike in the first 30–90 seconds of playback, a subtle toast banner appears below the video player: “High persuasion density detected. You may want to skip.” The banner auto-dismisses after 8 seconds and can be permanently dismissed for the current video.
+If red flags spike in the first 30–90 seconds of playback, a subtle toast banner appears below the video player: "High persuasion density detected. You may want to skip." The banner auto-dismisses after 8 seconds and can be permanently dismissed for the current video.
+
+## **5.4 Community Contribution Mode (Client-Side LLM Evaluation)**
+
+Community Contribution Mode enables users to contribute LLM-based evaluations from their own browser using their own AI provider API keys. This creates a distributed evaluation network that benefits all TubeSage users while reducing server-side LLM costs.
+
+### **5.4.1 Supported AI Providers**
+
+The extension integrates with AI providers via the **Vercel AI SDK** (`ai` package), which provides a unified interface across multiple providers:
+
+| Provider | SDK Package | Use Case |
+| :---- | :---- | :---- |
+| OpenAI | `@ai-sdk/openai` | GPT-4o, GPT-4o-mini; most common choice for users with existing OpenAI accounts |
+| OpenRouter | `@ai-sdk/openrouter` | Access to 100\+ models through a single API key; flexible model selection |
+| Ollama | `ollama-ai-provider` | Fully local inference; no API key required; zero cost; requires local Ollama installation |
+| OpenCode | `@ai-sdk/openai` (OpenAI-compatible) | Self-hosted or alternative OpenAI-compatible endpoints |
+
+### **5.4.2 Provider Configuration UI**
+
+The Options Page includes a dedicated "AI Providers" section with the following elements:
+
+* **Provider selector:** Dropdown to choose the active provider (OpenAI, OpenRouter, Ollama, OpenCode).
+
+* **API key input:** Secure text field for entering the provider API key. Displayed as masked characters after entry. For Ollama, this field is hidden since no key is required.
+
+* **Base URL override:** Optional field for OpenCode or custom Ollama endpoints (default: `http://localhost:11434` for Ollama).
+
+* **Model selector:** Text field or dropdown (populated dynamically where possible) for specifying the model ID (e.g., `gpt-4o-mini`, `llama3.1`).
+
+* **Test connection button:** Sends a minimal test prompt to verify the provider configuration works. Displays success/failure inline.
+
+* **Community Contribution toggle:** Master switch to enable/disable contributing evaluations back to the TubeSage server. Clearly labeled: *"When enabled, videos you watch will be evaluated using your AI provider and the results will be shared with the TubeSage community. Your API key never leaves your browser."*
+
+### **5.4.3 API Key Security Guarantees**
+
+User API keys are treated with the highest sensitivity. The following guarantees are enforced and communicated clearly in the extension UI:
+
+* **Keys never leave the browser.** API keys are stored in `chrome.storage.local` (encrypted at rest by Chrome) and are used exclusively for direct browser-to-provider API calls. They are never included in any request to the TubeSage backend server.
+
+* **Keys are never logged.** No telemetry, error reporting, or analytics pipeline captures or transmits API key values.
+
+* **Keys are never included in contributed results.** When a client-side evaluation is submitted to the server via POST /api/v1/evaluate/contribute, the payload contains only the evaluation result, video metadata, and a contributor token — never the API key or provider credentials.
+
+* **Keys can be deleted at any time.** The Options Page provides a "Remove API Key" button that immediately deletes the key from `chrome.storage.local`.
+
+* **Visible trust messaging.** The AI Providers settings section displays a persistent notice: *"Your API keys are stored securely in your browser and are never sent to TubeSage servers. All AI calls are made directly from your browser to your chosen provider."*
+
+### **5.4.4 Client-Side Evaluation Flow**
+
+When Community Contribution Mode is active, the extension follows this flow for uncached videos during playback:
+
+1. **Cache miss detected** — Video has no evaluation in L1 (IndexedDB) or L2/L3 (server lookup returns no result).
+
+2. **Transcript acquired** — The extension has obtained a usable transcript (via DOM caption stream or TimedText fetch).
+
+3. **Prompt template fetched** — The extension retrieves the current evaluation prompt template from the server (GET /api/v1/evaluate/prompt-template). The template is cached locally and refreshed when the eval\_version changes.
+
+4. **LLM call executed** — Using the Vercel AI SDK, the extension constructs a provider instance with the user's stored API key and sends the structured prompt \+ transcript to the provider. The call happens entirely within the browser's execution context.
+
+5. **Result rendered locally** — The evaluation result is immediately applied to the local UI (badge, tooltip, early warning) and written to the L1 IndexedDB cache.
+
+6. **Result contributed to server** — If contribution is enabled, the evaluation is submitted to POST /api/v1/evaluate/contribute. The server validates the result schema, applies trust scoring (see 5.4.5), and writes it to the global cache (L3 → L2).
+
+### **5.4.5 Contributed Evaluation Trust & Validation**
+
+Since client-contributed evaluations originate from untrusted environments, the server applies validation before accepting them into the global cache:
+
+* **Schema validation:** The contributed evaluation must conform to the exact Zod schema for EvaluationResult. Malformed payloads are rejected.
+
+* **Eval version match:** The evaluation must reference the current (or recent) eval\_version. Evaluations generated with outdated prompts are rejected.
+
+* **Trust scoring:** Each contributing user accumulates a trust score based on consistency with server-generated evaluations. New contributors start with low trust; their evaluations are stored but not served to other users until cross-validated by server evaluations or corroborated by other contributors.
+
+* **Rate limiting:** Contributors are rate-limited to prevent abuse (max 30 contributed evaluations per hour per user).
+
+* **Anomaly detection:** Evaluations with signal scores that are statistical outliers compared to the existing corpus for similar content are flagged for review rather than auto-accepted.
 
 # **6\. Evaluation Pipeline**
 
 ## **6.1 Pipeline Overview**
 
-The evaluation pipeline lives in packages/evaluation and combines fast heuristics with LLM-based classification. It operates in two modes:
+The evaluation pipeline lives in packages/evaluation and combines fast heuristics with LLM-based classification. It operates in three modes:
 
-| Mode | Trigger | Input | Latency Target | Cost |
-| :---- | :---- | :---- | :---- | :---- |
-| Early Warning | User starts watching a video | First 60–120 seconds of transcript | \< 3 seconds | Low (small prompt, cached aggressively) |
-| Full Evaluation | Batch request from feed or user-initiated | Full transcript (or first 10 minutes) | \< 10 seconds (async acceptable) | Medium (larger prompt, one LLM call per uncached video) |
+| Mode | Trigger | Input | Latency Target | Cost | Execution |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| Early Warning | User starts watching a video | First 60–120 seconds of transcript | \< 3 seconds | Low (small prompt, cached aggressively) | Server |
+| Full Evaluation | Batch request from feed or user-initiated | Full transcript (or first 10 minutes) | \< 10 seconds (async acceptable) | Medium (larger prompt, one LLM call per uncached video) | Server |
+| Client-Side Evaluation | Cache miss \+ Community Contribution Mode active | Full transcript (or first 10 minutes) | Varies by provider (typically 3–15 seconds) | Zero server cost (user's own API key / local Ollama) | Client (browser) |
 
 ## **6.2 Signal Categories**
 
@@ -311,6 +419,8 @@ The LLM receives a structured prompt containing the transcript segment, the sign
 
 The prompt explicitly instructs the model to be viewer-centric, non-moralizing, and to focus on informational utility rather than content quality judgments.
 
+The same prompt template is used for both server-side and client-side evaluations. In Community Contribution Mode, the extension fetches the current prompt template from GET /api/v1/evaluate/prompt-template and uses it with the Vercel AI SDK to execute the evaluation locally. This ensures consistency across all evaluation sources regardless of which AI provider or model the user has configured.
+
 ## **6.5 Caching Strategy**
 
 | Cache Layer | Technology | Key | TTL | Purpose |
@@ -320,6 +430,8 @@ The prompt explicitly instructs the model to be viewer-centric, non-moralizing, 
 | L3 — Database | PostgreSQL (Evaluation table) | (video\_id, transcript\_hash, eval\_version) composite unique | Indefinite | Canonical persistent cache; source of truth for all evaluations |
 
 Cache flow: L1 → L2 → L3 → LLM evaluation → write back to L3 → L2 → return to client (client writes L1). When the eval\_version changes, all cache layers are effectively invalidated because the version is part of the key.
+
+**Community Contribution cache flow:** L1 miss → L2/L3 miss → client-side LLM evaluation → write to L1 → contribute result to server (POST /api/v1/evaluate/contribute) → server validates and writes to L3 → L2. This means a contributing user's evaluation immediately benefits themselves (L1) and, once validated, benefits all other users (L3 → L2).
 
 # **7\. Performance & Scalability Requirements**
 
@@ -345,6 +457,8 @@ Cache flow: L1 → L2 → L3 → LLM evaluation → write back to L3 → L2 → 
 
 * **Client-side offloading:** As the local heuristic engine improves, the percentage of evaluations requiring server-side LLM calls decreases over time.
 
+* **Community Contribution offloading:** Users with Community Contribution Mode enabled perform LLM evaluations using their own API keys, contributing results to the global cache at zero server LLM cost. As adoption grows, the server-side evaluation workload decreases proportionally.
+
 # **8\. Security & Privacy**
 
 ## **8.1 Data Collection Principles**
@@ -369,11 +483,27 @@ Cache flow: L1 → L2 → L3 → LLM evaluation → write back to L3 → L2 → 
 
 * Optional: users can link their account to an email for cross-device sync (future feature).
 
-## **8.3 Privacy Mode**
+## **8.3 Client-Side API Key Security**
 
-A "Privacy Mode" toggle in the extension options disables all server communication. In this mode, the extension operates entirely on client-side heuristics and the local IndexedDB cache. No data leaves the browser.
+Users who enable Community Contribution Mode enter their own AI provider API keys into the extension. The following security guarantees are architecturally enforced:
 
-## **8.4 Security Measures**
+* **Browser-only storage.** API keys are stored in `chrome.storage.local`, which is sandboxed to the extension and encrypted at rest by Chrome's storage layer. Keys are never written to IndexedDB, localStorage, or any other shared storage.
+
+* **No server transmission — ever.** The extension's network layer is architecturally partitioned: API key values are accessible only to the AI Provider Manager module, which makes direct browser-to-provider calls. The module that communicates with the TubeSage backend server has no access to the key store. This is not a policy — it is a code-level isolation boundary.
+
+* **No telemetry capture.** Error reporting and analytics pipelines are configured to redact any string matching API key patterns. Even in crash reports, keys are never captured.
+
+* **Contributed evaluation payloads are key-free.** The POST /api/v1/evaluate/contribute request schema does not include any field for API keys. The server has no mechanism to receive or store user keys.
+
+* **User-visible transparency.** The AI Providers settings section displays a persistent, non-dismissible notice: *"Your API keys are stored securely in your browser and are never sent to TubeSage servers. All AI calls are made directly from your browser to your chosen provider."*
+
+* **One-click deletion.** Users can remove their API keys at any time via a "Remove API Key" button, which immediately purges the key from `chrome.storage.local`.
+
+## **8.4 Privacy Mode**
+
+A "Privacy Mode" toggle in the extension options disables all server communication. In this mode, the extension operates entirely on client-side heuristics, client-side LLM evaluation (if an API key is configured), and the local IndexedDB cache. No data leaves the browser (except direct browser-to-AI-provider calls if an API key is set).
+
+## **8.5 Security Measures**
 
 * All API communication over HTTPS with TLS 1.3.
 
@@ -400,6 +530,7 @@ A "Privacy Mode" toggle in the extension options disables all server communicati
 | Prisma | ≥ 5.x | ORM, migrations, and database client generation |
 | Docker Compose | Latest | Local PostgreSQL, Redis, and service orchestration |
 | Vitest | Latest | Unit and integration testing |
+| Vercel AI SDK | Latest (`ai` \+ provider packages) | Unified LLM provider interface for client-side evaluations (OpenAI, OpenRouter, Ollama, OpenCode) |
 | Playwright | Latest | E2E testing for the Chrome extension |
 
 ## **9.2 CI/CD Pipeline**
@@ -441,7 +572,7 @@ TubeSage occupies a sensitive position: it makes judgments about content that cr
 
 | Phase | Scope | Timeline |
 | :---- | :---- | :---- |
-| v1.0 — MVP | Chrome extension with feed indicators, early-warning toast, server-side LLM evaluation, PostgreSQL cache, basic heuristics. Anonymous users only. | Q2 2026 |
+| v1.0 — MVP | Chrome extension with feed indicators, early-warning toast, server-side LLM evaluation, PostgreSQL cache, basic heuristics, Community Contribution Mode (client-side LLM via Vercel AI SDK with OpenAI, OpenRouter, Ollama, OpenCode support). Anonymous users only. | Q2 2026 |
 | v1.1 — Personalization | Personal value profiles, adjustable strictness, channel whitelisting, behavioral signal integration for personalized scoring. | Q3 2026 |
 | v1.2 — Local Intelligence | On-device evaluation via WebGPU/WASM small model. Server becomes optional for most evaluations. Dramatically reduced server costs. | Q4 2026 |
 | v2.0 — Platform Expansion | Support for additional platforms (X, podcast platforms, blogs). Community-aggregated signals (opt-in). Research/focus mode. | 2027 |
@@ -460,6 +591,9 @@ TubeSage occupies a sensitive position: it makes judgments about content that cr
 | Full Evaluation | A comprehensive evaluation based on the complete transcript (or first 10 minutes) |
 | Heuristic | A lightweight, rule-based check that runs client-side (regex patterns, keyword frequency, n-gram analysis) |
 | CTA | Call to Action — a prompt directing the viewer to subscribe, click, buy, or take a funnel action |
+| Community Contribution Mode | Optional mode where users provide their own AI provider API keys and the extension performs LLM evaluations client-side, contributing results to the global cache |
+| Client-Side Evaluation | An LLM-based evaluation executed entirely in the user's browser via the Vercel AI SDK, using the user's own API key |
+| Contributed Evaluation | An evaluation result submitted from a user's browser to the TubeSage server for inclusion in the global cache, subject to trust scoring and validation |
 
 ## **12.2 Technology Decision Log**
 
@@ -471,5 +605,6 @@ TubeSage occupies a sensitive position: it makes judgments about content that cr
 | Primary Database | PostgreSQL | MongoDB, SQLite, MySQL | Relational model fits evaluation data; JSONB for flexibility; mature managed hosting options; Prisma’s strongest support |
 | Job Queue | BullMQ \+ Redis | pg-boss, RabbitMQ, SQS | Simple setup; Redis serves double duty as cache \+ queue broker; great TypeScript SDK |
 | Monorepo Tool | Turborepo \+ pnpm | Nx, Lerna, Yarn workspaces | Fast incremental builds; native pnpm integration; minimal configuration overhead |
+| Client-Side LLM SDK | Vercel AI SDK (`ai`) | LangChain.js, direct provider SDKs, LiteLLM | Unified provider interface with first-class TypeScript support; provider-agnostic streaming; lightweight bundle size suitable for browser; active maintenance and broad provider coverage (OpenAI, OpenRouter, Ollama, and OpenAI-compatible endpoints) |
 | Testing | Vitest \+ Playwright | Jest \+ Puppeteer, Cypress | Vitest is faster and ESM-native; Playwright handles extension E2E better than alternatives |
 
